@@ -16,7 +16,7 @@ from xenon.engine.tool_tracker import ToolExecutionTracker
 from xenon.nodes import tool_executor as tool_executor_module
 from xenon.nodes.approval_policy import APPROVAL_ALLOWED_ONCE
 from xenon.nodes.tool_executor import ToolExecuteResult, ToolExecutor
-from xenon.nodes.tool_registry import BUILTIN_TOOL_REGISTRY
+from xenon.nodes.tool_registry import BUILTIN_TOOL_METHODS
 from xenon.nodes.tool_result import ToolResult, enrich_tool_result
 from xenon.nodes.tool_security import (
     PROVENANCE_SOURCE_BY_ACTION,
@@ -166,7 +166,8 @@ def test_tool_cannot_forge_trusted_provenance_or_suppress_advisories():
 
 
 def test_action_mapping_covers_every_builtin_and_fails_safe_for_plugins():
-    assert set(BUILTIN_TOOL_REGISTRY.names()).issubset(PROVENANCE_SOURCE_BY_ACTION)
+    fixed_builtins = {*BUILTIN_TOOL_METHODS, "submit_plan"}
+    assert fixed_builtins.issubset(PROVENANCE_SOURCE_BY_ACTION)
     assert PROVENANCE_SOURCE_BY_ACTION["command"] == "command"
     assert PROVENANCE_SOURCE_BY_ACTION["git"] == "repo"
     assert PROVENANCE_SOURCE_BY_ACTION["read_document"] == "document"
