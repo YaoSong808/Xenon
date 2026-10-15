@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 import time
 from pathlib import Path
@@ -19,8 +20,14 @@ from xenon.nodes.tool_executor import ToolExecuteResult, ToolExecutor
 from xenon.nodes.tool_registry import BUILTIN_TOOL_METHODS
 from xenon.nodes.tool_result import ToolResult, enrich_tool_result
 from xenon.nodes.tool_security import (
+    MAX_SOURCE_REF_CHARS,
     PROVENANCE_SOURCE_BY_ACTION,
+    Provenance,
+    SecurityAdvisory,
     detect_prompt_injection,
+    format_advisory_warning,
+    model_visible_content,
+    provenance_for_tool,
 )
 from xenon.repl.context_manager import ContextManager
 from xenon.repl.execution_policy import ExecutionLevel
@@ -426,3 +433,77 @@ def test_session_tool_event_carries_full_advisory_payload(monkeypatch, tmp_path)
     assert event["security_advisories"][0]["rule_id"] == (
         "ignore_prior_instructions"
     )
+
+
+def test_provenance_source_refs_cover_command_and_repo_branches():
+    command = provenance_for_tool("command", {"command": "curl https://example.test"})
+    assert command.source_type == "command"
+    assert command.source_ref == "curl https://example.test"
+    assert command.untrusted is True
+
+    # `git` prefers the repo ref, then the git command, then a path.
+    assert provenance_for_tool("git", {"repo": "owner/repo"}).source_ref == "owner/repo"
+    assert (
+        provenance_for_tool("git", {"git_command": "git log --oneline"}).source_ref
+        == "git log --oneline"
+    )
+    assert provenance_for_tool("git", {"path": "src/app.py"}).source_ref == "src/app.py"
+
+    # Refs are whitespace-collapsed and bounded to MAX_SOURCE_REF_CHARS.
+    collapsed = provenance_for_tool("command", {"command": "curl\n  https://example.test"})
+    assert collapsed.source_ref == "curl https://example.test"
+    assert len(
+        provenance_for_tool("command", {"command": "x" * 500}).source_ref
+    ) == MAX_SOURCE_REF_CHARS
+
+
+def test_model_visible_content_covers_list_and_nested_mcp_shapes():
+    # List payloads (e.g. `files`) join and honour list_cap.
+    listed = model_visible_content(
+        {"files": [f"file-{index}" for index in range(10)]}, list_cap=3
+    )
+    assert listed == "file-0\nfile-1\nfile-2"
+
+    # MCP results nested under result.content: dict items use `text`, plain
+    # items are stringified, and str_cap bounds the joined text.
+    nested = model_visible_content(
+        {"result": {"content": [{"text": "alpha"}, "beta", {"other": "gamma"}]}}
+    )
+    assert nested.splitlines() == ["alpha", "beta", "{'other': 'gamma'}"]
+
+    capped = model_visible_content(
+        {"result": {"content": [{"text": "y" * 100}]}}, str_cap=10
+    )
+    assert capped == "y" * 10
+
+
+def test_advisory_warning_is_empty_without_provenance_or_advisories():
+    provenance = Provenance(source_type="file", source_ref="a.txt", untrusted=True)
+    advisory = SecurityAdvisory(
+        kind="prompt_injection", rule_id="ignore_prior_instructions"
+    )
+
+    assert format_advisory_warning(None, [advisory]) == ""
+    assert format_advisory_warning(provenance, []) == ""
+
+    rendered = format_advisory_warning(provenance, [advisory])
+    assert "ignore_prior_instructions" in rendered
+    assert "file · a.txt" in rendered
+
+
+def test_mapping_covers_a_fresh_interpreter_registry_snapshot():
+    """Static registrations only: a new interpreter cannot be polluted by the
+    temporary plugins other tests register into the global registry."""
+
+    snapshot = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "from xenon.nodes.tool_registry import BUILTIN_TOOL_REGISTRY;"
+            "print('\\n'.join(sorted(BUILTIN_TOOL_REGISTRY.names())))",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert set(snapshot.stdout.split()).issubset(PROVENANCE_SOURCE_BY_ACTION)
