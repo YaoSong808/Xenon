@@ -185,6 +185,8 @@ class ThinkingStep:
     action_input: dict = field(default_factory=dict)
     observation: str = ""
     is_error: bool = False
+    provenance: dict[str, Any] | None = None
+    security_advisories: list[dict[str, Any]] = field(default_factory=list)
 
 
 class ThinkingPanel:
@@ -260,6 +262,10 @@ class ThinkingPanel:
             self._pending_thought = ""
             self.steps.append(step)
         step.observation = observation
+        step.provenance = getattr(observation, "provenance", None)
+        step.security_advisories = list(
+            getattr(observation, "security_advisories", []) or []
+        )
         if success is None and isinstance(observation, str) and hasattr(
             observation, "success"
         ):

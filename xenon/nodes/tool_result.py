@@ -11,6 +11,14 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, field
 from typing import Any
 
+from xenon.nodes.tool_security import (
+    Provenance,
+    SecurityAdvisory,
+    detect_prompt_injection,
+    model_visible_content,
+    provenance_for_tool,
+)
+
 
 TOOL_RESULT_SCHEMA_VERSION = "1.0"
 
@@ -40,6 +48,8 @@ class ToolResult:
     filters: dict[str, Any] = field(default_factory=dict)
     metadata: dict[str, Any] = field(default_factory=dict)
     error: str | None = None
+    provenance: Provenance | None = None
+    security_advisories: list[SecurityAdvisory] = field(default_factory=list)
     schema_version: str = TOOL_RESULT_SCHEMA_VERSION
 
     @classmethod
@@ -137,6 +147,8 @@ class ToolResult:
             "filter_end_time",
             "query",
             "error",
+            "provenance",
+            "security_advisories",
             "schema_version",
             "tool_result",
         }
@@ -145,6 +157,14 @@ class ToolResult:
             for key, value in payload.items()
             if key not in known and key != "success"
         }
+        # The invoked tool name is authoritative. A plugin-controlled payload
+        # must not be able to impersonate another action type.
+        provenance = provenance_for_tool(tool_name, payload)
+        security_advisories = (
+            detect_prompt_injection(model_visible_content(payload))
+            if provenance.untrusted
+            else []
+        )
         return cls(
             tool_name=tool_name,
             success=bool(payload.get("success", False)),
@@ -167,6 +187,8 @@ class ToolResult:
             filters=filters,
             metadata=metadata,
             error=str(payload["error"]) if payload.get("error") else None,
+            provenance=provenance,
+            security_advisories=security_advisories,
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -207,9 +229,11 @@ def enrich_tool_result(
 ) -> dict[str, Any]:
     """Attach the canonical view to a legacy result dictionary.
 
-    Existing top-level keys are intentionally preserved.  Consumers can use
-    ``result["tool_result"]`` or the duplicated canonical fields while older
-    integrations continue reading ``content``, ``files`` and ``count``.
+    Existing legacy top-level keys are intentionally preserved.  Provenance
+    and advisories are security metadata and are always replaced with the
+    locally derived canonical values, so a tool cannot forge its own trust
+    marker.  Older integrations can keep reading ``content``, ``files`` and
+    ``count``.
     """
     result = (
         dict(raw)
@@ -234,4 +258,6 @@ def enrich_tool_result(
         "filters",
     ):
         result.setdefault(key, canonical[key])
+    result["provenance"] = canonical["provenance"]
+    result["security_advisories"] = canonical["security_advisories"]
     return result

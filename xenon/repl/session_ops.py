@@ -80,6 +80,10 @@ class SessionOpsMixin:
                     if step.is_error
                     else ""
                 ),
+                provenance=getattr(step, "provenance", None),
+                security_advisories=list(
+                    getattr(step, "security_advisories", []) or []
+                ),
             )
 
             # PostToolUse hook：exit 2 的 stderr 回传给用户/模型。

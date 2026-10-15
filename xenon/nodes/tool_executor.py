@@ -30,7 +30,7 @@ from xenon.nodes.tool_classify import (  # noqa: E402,F401 - 兼容导出
 import re
 import time
 import uuid
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from enum import Enum
 from pathlib import Path
@@ -42,6 +42,7 @@ from xenon.engine.tool_tracker import ToolExecutionTracker
 from xenon.nodes.tool_node import ToolNode, _DYNAMIC_TOOLS
 from xenon.nodes.tool_registry import BUILTIN_TOOL_REGISTRY
 from xenon.nodes.tool_result import ToolResult, enrich_tool_result
+from xenon.nodes.tool_security import format_advisory_warning, model_visible_content
 from xenon.engine.callbacks import mask_sensitive_params
 from xenon.engine.evidence_gate import GateVerdict
 from xenon.engine.evidence_runtime import (
@@ -344,13 +345,20 @@ class _ToolObservation(str):
     """
 
     def __new__(
-        cls, text: str, success: bool = True, degraded: bool = False
+        cls,
+        text: str,
+        success: bool = True,
+        degraded: bool = False,
+        provenance: dict[str, Any] | None = None,
+        security_advisories: list[dict[str, Any]] | None = None,
     ) -> "_ToolObservation":
         # success/degraded 非 keyword-only：copy.deepcopy 的 __newobj__
         # 只传 (cls, text)，随后用 __dict__ 恢复真实标记。
         obj = super().__new__(cls, text)
         obj.success = success  # type: ignore[attr-defined]
         obj.degraded = degraded  # type: ignore[attr-defined]
+        obj.provenance = provenance  # type: ignore[attr-defined]
+        obj.security_advisories = security_advisories or []  # type: ignore[attr-defined]
         return obj
 
 
@@ -403,10 +411,16 @@ class ToolExecuteResult:
 
     def format_observation(self) -> str:
         """供引擎回填给 LLM 的观察文本（携带结构化 success/degraded）。"""
+        provenance = self.structured.provenance if self.structured else None
+        advisories = self.structured.security_advisories if self.structured else []
+        warning = format_advisory_warning(provenance, advisories)
+        text = f"{warning}\n\n{self.observation}" if warning else self.observation
         return _ToolObservation(
-            self.observation,
+            text,
             success=self.success,
             degraded=bool((self.raw or {}).get("degraded")),
+            provenance=asdict(provenance) if provenance is not None else None,
+            security_advisories=[asdict(item) for item in advisories],
         )
 
     def next_hint(self) -> str:
@@ -442,28 +456,8 @@ def _extract_summary(
     按优先级查找: content → stdout → output → files。
     兼容 MCP 嵌套响应 (result.content[].text)。
     """
-    for key in ("content", "stdout", "output", "files"):
-        val = result.get(key)
-        if val:
-            if isinstance(val, list):
-                return "\n".join(str(v) for v in val[:list_cap])
-            return str(val)[:str_cap]
-
-    # v0.5.3: MCP 嵌套响应兜底 — result.result.content[].text
-    inner = result.get("result", {})
-    if isinstance(inner, dict):
-        mcp_content = inner.get("content", [])
-        if isinstance(mcp_content, list) and mcp_content:
-            parts = []
-            for item in mcp_content:
-                if isinstance(item, dict):
-                    parts.append(item.get("text", str(item)))
-                else:
-                    parts.append(str(item))
-            if parts:
-                return "\n".join(parts)[:str_cap]
-
-    return "（执行成功，无文本输出）"
+    summary = model_visible_content(result, list_cap=list_cap, str_cap=str_cap)
+    return summary or "（执行成功，无文本输出）"
 
 
 # ── 门面 ───────────────────────────────────────────────────
@@ -816,29 +810,7 @@ class ToolExecutor:
                     "\n⚠️ 本次有副作用的操作状态未知，可能已部分生效；"
                     "必须先核验实际状态，不得自动重试。"
                 )
-            if tracker:
-                tracker.record(
-                    tool_name,
-                    params,
-                    success,
-                    observation,
-                    error=error,
-                    state=state.value,
-                    attempts=attempts,
-                    elapsed_seconds=float(checkpoint["elapsed_seconds"]),
-                )
-            self.record_tool_observation(
-                tool_name, params, success, observation, tracker, context
-            )
-            if self.execution_policy is not None:
-                self.execution_policy.emit(
-                    "tool_end",
-                    tool=tool_name,
-                    success=success,
-                    state=state.value,
-                    attempts=attempts,
-                )
-            return ToolExecuteResult(
+            execution_result = ToolExecuteResult(
                 tool_name=tool_name,
                 success=success,
                 observation=observation,
@@ -855,6 +827,37 @@ class ToolExecutor:
                 execution_id=execution_id,
                 lifecycle=tuple(lifecycle),
             )
+            provenance = execution_result.structured.provenance
+            advisories = execution_result.structured.security_advisories
+            provenance_dict = asdict(provenance) if provenance is not None else None
+            advisory_dicts = [asdict(item) for item in advisories]
+            if provenance_dict and advisory_dicts:
+                context.add_security_advisories(provenance_dict, advisory_dicts)
+            if tracker:
+                tracker.record(
+                    tool_name,
+                    params,
+                    success,
+                    observation,
+                    error=error,
+                    state=state.value,
+                    attempts=attempts,
+                    elapsed_seconds=float(checkpoint["elapsed_seconds"]),
+                    provenance=provenance_dict,
+                    security_advisories=advisory_dicts,
+                )
+            self.record_tool_observation(
+                tool_name, params, success, observation, tracker, context
+            )
+            if self.execution_policy is not None:
+                self.execution_policy.emit(
+                    "tool_end",
+                    tool=tool_name,
+                    success=success,
+                    state=state.value,
+                    attempts=attempts,
+                )
+            return execution_result
 
         transition(ToolExecutionState.PENDING)
 

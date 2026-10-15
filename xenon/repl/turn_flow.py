@@ -121,6 +121,7 @@ class TurnFlowMixin:
         # 每轮重置：边界审批的 allowed-once 只对本轮有效；TurnGate 状态机同样清零。
         self._boundary_approved_once.clear()
         self._turn_gate.reset()
+        self.agent_context.clear_security_advisories()
 
         # v0.6.0: 智能路由 - 根据用户输入自动选择推理范式
         if self.intelligent_router.enabled:

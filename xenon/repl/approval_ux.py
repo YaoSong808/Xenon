@@ -11,6 +11,7 @@ from __future__ import annotations
 import sys
 from typing import Any
 
+from rich.markup import escape
 from rich.panel import Panel
 from rich.prompt import Prompt
 
@@ -229,6 +230,27 @@ class ApprovalUxMixin:
                     + (f"命令: {brief}\n" if brief else "")
                     + f"原因：{reason or '工具边界策略'}"
                 )
+                advisory_items = self.agent_context.get_security_advisories()
+                if advisory_items:
+                    sources = sorted(
+                        {
+                            f"{item['provenance']['source_type']} · "
+                            f"{item['provenance']['source_ref']}"
+                            for item in advisory_items
+                        }
+                    )[:3]
+                    rules = sorted(
+                        {
+                            str(item["advisory"].get("rule_id") or "")
+                            for item in advisory_items
+                            if item.get("advisory", {}).get("rule_id")
+                        }
+                    )[:5]
+                    body += (
+                        "\n\n⚠️ 该动作可能受不可信内容影响"
+                        f"\n来源：{escape('; '.join(sources))}"
+                        f"\n命中规则：{escape(', '.join(rules))}"
+                    )
                 if diff_text:
                     body += f"\n\n{diff_text}"
                 console.print(

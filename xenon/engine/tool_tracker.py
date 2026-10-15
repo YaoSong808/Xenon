@@ -26,6 +26,8 @@ class ToolCall:
     state: str = ""
     attempts: int = 1
     elapsed_seconds: float = 0.0
+    provenance: dict[str, Any] | None = None
+    security_advisories: list[dict[str, Any]] = field(default_factory=list)
 
 
 @dataclass
@@ -51,6 +53,8 @@ class ToolExecutionTracker:
         state: str = "",
         attempts: int = 1,
         elapsed_seconds: float = 0.0,
+        provenance: dict[str, Any] | None = None,
+        security_advisories: list[dict[str, Any]] | None = None,
     ) -> None:
         """记录一次工具调用。"""
         call = ToolCall(
@@ -62,6 +66,8 @@ class ToolExecutionTracker:
             state=state or ("succeeded" if success else "failed"),
             attempts=max(0, attempts),
             elapsed_seconds=max(0.0, elapsed_seconds),
+            provenance=dict(provenance) if provenance else None,
+            security_advisories=list(security_advisories or []),
         )
         self.calls.append(call)
         status = "成功" if success else "失败"
@@ -148,6 +154,8 @@ class ToolExecutionTracker:
                 "state": c.state,
                 "attempts": c.attempts,
                 "elapsed_seconds": c.elapsed_seconds,
+                "provenance": c.provenance,
+                "security_advisories": c.security_advisories,
             }
             for c in self.calls
         ]

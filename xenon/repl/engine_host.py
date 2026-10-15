@@ -187,6 +187,8 @@ class EngineHostMixin:
                     success,
                     result=result,
                     error=str(error) if error else None,
+                    provenance=getattr(call, "provenance", None),
+                    security_advisories=getattr(call, "security_advisories", None),
                 )
             recent_activity.append(
                 {

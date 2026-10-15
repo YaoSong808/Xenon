@@ -254,6 +254,17 @@ class ContextManager:
         P2-Medium：线程安全保护。
         """
         with self._lock:
+            metadata = dict(kwargs.pop("metadata", {}) or {})
+            if role == "user":
+                metadata.setdefault(
+                    "provenance",
+                    {
+                        "source_type": "user",
+                        "source_ref": "user",
+                        "untrusted": False,
+                    },
+                )
+            kwargs["metadata"] = metadata
             # 自动推断 turn_type
             turn_type = kwargs.pop("turn_type", None)
             if turn_type is None:
@@ -283,6 +294,11 @@ class ContextManager:
                     "turn_index": turn.turn_index,
                     "task_tier": turn.task_tier,
                     "semantic_group_id": turn.semantic_group_id,
+                    **(
+                        {"provenance": turn.metadata["provenance"]}
+                        if "provenance" in turn.metadata
+                        else {}
+                    ),
                 },
             )
             turn.metadata.setdefault("event_id", event.event_id)
@@ -454,6 +470,8 @@ class ContextManager:
         success: bool,
         result: str = "",
         error: str | None = None,
+        provenance: dict[str, Any] | None = None,
+        security_advisories: list[dict[str, Any]] | None = None,
     ) -> None:
         """Persist a compact, redacted tool call/result pair across turns."""
         safe_params = self._safe_context_value(params or {})
@@ -473,7 +491,11 @@ class ContextManager:
             f"[{status}] {detail[:2000]}",
             turn_type="tool_result",
             semantic_group_id=group_id,
-            metadata={"tool_name": tool_name, "success": bool(success)},
+            metadata={
+                "tool_name": tool_name,
+                "success": bool(success),
+                **({"provenance": provenance} if provenance else {}),
+            },
         )
         self.end_semantic_group(group_id)
 
@@ -508,11 +530,18 @@ class ContextManager:
                 summary = f"[原生工具调用: {', '.join(names) or 'unknown'}]"
             else:
                 summary = "[原生工具协议消息]"
+            metadata = {"api_message": copy.deepcopy(message)}
+            if role == "tool":
+                metadata["provenance"] = {
+                    "source_type": "tool",
+                    "source_ref": str(message.get("name") or "provider_tool")[:200],
+                    "untrusted": True,
+                }
             self.add_message(
                 role,
                 summary,
                 turn_type="tool_call" if role == "assistant" else "tool_result",
-                metadata={"api_message": copy.deepcopy(message)},
+                metadata=metadata,
             )
             added += 1
         return added

@@ -165,6 +165,71 @@ exceeds the current turn's ``_execution_level``.  Returning True lets the
             return "unavailable"
         return outcome if outcome in APPROVAL_OUTCOMES else "unavailable"
 
+    def add_security_advisories(
+        self,
+        provenance: dict[str, Any],
+        advisories: list[dict[str, Any]],
+        *,
+        limit: int = 20,
+    ) -> None:
+        """Retain bounded, deduplicated advisory context for this turn."""
+
+        if not isinstance(provenance, dict) or not advisories:
+            return
+        with self._tool_checkpoint_lock:
+            current = list(self._store.get("_security_advisories", []))
+            seen = {
+                (
+                    item.get("provenance", {}).get("source_type"),
+                    item.get("provenance", {}).get("source_ref"),
+                    item.get("advisory", {}).get("rule_id"),
+                )
+                for item in current
+                if isinstance(item, dict)
+            }
+            compact_provenance = {
+                "source_type": str(provenance.get("source_type") or "tool"),
+                "source_ref": str(provenance.get("source_ref") or "")[:200],
+                "untrusted": bool(provenance.get("untrusted", True)),
+            }
+            for advisory in advisories:
+                if not isinstance(advisory, dict):
+                    continue
+                compact_advisory = {
+                    "kind": str(advisory.get("kind") or "prompt_injection"),
+                    "rule_id": str(advisory.get("rule_id") or ""),
+                    "severity": str(advisory.get("severity") or "warning"),
+                }
+                if not compact_advisory["rule_id"]:
+                    continue
+                key = (
+                    compact_provenance["source_type"],
+                    compact_provenance["source_ref"],
+                    compact_advisory["rule_id"],
+                )
+                if key in seen:
+                    continue
+                seen.add(key)
+                current.append(
+                    {
+                        "provenance": compact_provenance,
+                        "advisory": compact_advisory,
+                    }
+                )
+            self._store["_security_advisories"] = current[-max(1, limit) :]
+
+    def get_security_advisories(self) -> list[dict[str, Any]]:
+        """Return a defensive copy of current-turn advisory context."""
+
+        with self._tool_checkpoint_lock:
+            return copy.deepcopy(self._store.get("_security_advisories", []))
+
+    def clear_security_advisories(self) -> None:
+        """Drop advisory influence at the same boundary as other turn state."""
+
+        with self._tool_checkpoint_lock:
+            self._store.pop("_security_advisories", None)
+
     def set_plan_callback(self, callback: Any = None) -> None:
         """Register the plan-approval channel (REPL injects it)."""
         with self._tool_checkpoint_lock:
